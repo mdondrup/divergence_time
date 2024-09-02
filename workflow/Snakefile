@@ -25,7 +25,7 @@ onstart:
     print ("----------------------------------------------------------------------------")
     print ("Starting "+ WORKFLOW_NAME)   
     print ("----------------------------------------------------------------------------")
-    shell ('send_message.py' + WORKFLOW_NAME + '" started at $(date)"') # comment out this line if you don't have a messenger script
+    shell ('send_message.py "' + WORKFLOW_NAME + ' started at $(date)"') # comment out this line if you don't have a messenger script
 
 
 rule all:
