@@ -2,3 +2,33 @@
 # Please follow the best practices: 
 # https://snakemake.readthedocs.io/en/stable/snakefiles/best_practices.html,
 # in particular regarding the standardized folder structure mentioned there. 
+import os
+
+WORKFLOW_NAME="Example WF"
+
+config: "../config/config.yaml"
+
+from snakemake.utils import min_version
+min_version("8.14") 
+
+#include: "rules/setup.smk"
+
+
+onsuccess:
+    print( WORKFLOW_NAME+" finished, no error")
+    shell("send_message.py '" + WORKFLOW_NAME + " finished, no error'") # comment out this line if you don't have a messenger script
+onerror:
+    print("An error occurred, see the log")
+    shell("send_message.py 'An error occured in " + WORKFLOW_NAME + ", see the log: {log}'")
+    
+onstart:    
+    print ("----------------------------------------------------------------------------")
+    print ("Starting "+ WORKFLOW_NAME)   
+    print ("----------------------------------------------------------------------------")
+    shell ('send_message.py' + WORKFLOW_NAME + '" started at $(date)"') # comment out this line if you don't have a messenger script
+
+
+rule all:
+  
+
+
