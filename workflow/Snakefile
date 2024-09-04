@@ -4,6 +4,7 @@
 # in particular regarding the standardized folder structure mentioned there. 
 import os
 
+
 WORKFLOW_NAME="Divergence time estimation"
 
 configfile: "config/config.yaml"
