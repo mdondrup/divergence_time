@@ -2,3 +2,174 @@
 # Please follow the best practices: 
 # https://snakemake.readthedocs.io/en/stable/snakefiles/best_practices.html,
 # in particular regarding the standardized folder structure mentioned there. 
+import os
+
+WORKFLOW_NAME="Divergence time estimation"
+
+configfile: "config/config.yaml"
+
+from snakemake.utils import min_version
+min_version("8.14") 
+
+#include: "rules/setup.smk"
+
+VCF = config["vcf"] ## only bi-allelic SNPS
+FASTA = config["fasta"]
+GFF = config ["gff"]
+SUBSET = config["subset"] # subset of sample names to extract
+
+onsuccess:
+    print( WORKFLOW_NAME+" finished, no error")
+    shell("send_message.py '" + WORKFLOW_NAME + " finished, no error'") # comment out this line if you don't have a messenger script
+onerror:
+    print("An error occurred, see the log")
+    shell("send_message.py 'An error occured in " + WORKFLOW_NAME + ", see the log: {log}'")
+    
+onstart:    
+    print ("----------------------------------------------------------------------------")
+    print ("Starting " + WORKFLOW_NAME)   
+    print ("----------------------------------------------------------------------------")
+    shell ('send_message.py "' + WORKFLOW_NAME + ' started at $(date)"') # comment out this line if you don't have a messenger script
+
+
+rule all:
+    input: 
+        m="results/pairwise-differences.txt",
+        T1="results/divergence-time-mu1.txt",
+        T2="results/divergence-time-mu2.txt"
+    message: "Pairwise difference are found in {input.m}.\n Divergence time estimates are in {input.T1} and {input.T2}. "
+
+rule degenotate:
+    conda:"envs/degenotate.yaml"
+    input:
+        fasta=FASTA,
+        gff=GFF
+    output:
+        "results/degenotate/4Xsites.bed"
+    message: "calculating 4-fold degerate sites"
+    shell:
+        r"""
+        degenotate.py -a {input.gff}  -g {input.fasta} -x 4 -d " " -o $(dirname {output})  --overwrite
+        cat $(dirname {output})/degeneracy-all-sites.bed | awk '$5 == 4{{print($0)}}' > {output}
+        echo Found $(wc -l {output}) sites.
+        """
+
+rule rename_chromosomes:
+    conda: "envs/vcftools.yaml"
+    input: vcf=VCF,
+           namemap="config/"+config["renamechr"]
+    output: vcf="results/renamed.vcf.gz",
+            idx="results/renamed.vcf.gz.csi"
+    threads: 60
+    message: "Renaming chromosomes using namemap {input.namemap}"         
+    shell:
+        r"""
+        bcftools annotate --threads {threads} --rename-chrs {input.namemap} {input.vcf} | bgzip > {output.vcf}
+        bcftools index -f {output.vcf}
+        echo "---------------------------------------------------------"
+        echo "Remaining markers after {rule}:"
+        bcftools stats {output.vcf} | grep -e"^SN"
+        
+        """        
+
+        
+rule index_vcf:
+    conda:"envs/vcftools.yaml"
+    input:
+        vcf=VCF,
+    output: VCF+".csi"
+    message: "Indexing input VCF"
+    shell:
+        r"""
+         bcftools index -f {input.vcf}
+        """
+            
+
+
+        
+rule filter_vcf:
+    conda:"envs/vcftools.yaml"
+    input:
+        vcf=VCF if not config["renamechr"] else "results/renamed.vcf.gz",
+        vcfindex=VCF+".csi" if not config["renamechr"] else "results/renamed.vcf.gz.csi",
+        sites="results/degenotate/4Xsites.bed",
+    output: "results/filtered-4X.vcf.gz"
+    threads: 40
+    message: "filtering SNP matrix"
+    shell:
+        r"""
+       
+        bcftools view --threads {threads} -R {input.sites} --with-header --types snps --max-alleles 2  {input.vcf} |\
+        vcftools --gzvcf - --max-missing 1 --recode --stdout | bgzip -c > {output}
+        bcftools index {output}
+        echo "---------------------------------------------------------"
+        echo "Remaining markers after filtering for 4X-degenerate sites:"
+        bcftools stats {output} | grep -e"^SN"
+        """
+        
+rule make_genotype_matrix:
+    conda:"envs/vcftools.yaml"
+    
+    input: "results/filtered-4X.vcf.gz"
+    output: "results/genotype-matrix.txt"       
+    threads:40
+    params: subset=SUBSET
+    message: "generating Genotype matrix"
+    shell:
+        r"""
+         echo "{params.subset}" | tr ',' '\t' > {output} # create simple header
+         echo "" >> {output}
+         # get the genotype matrix, we don't need the separator
+         bcftools query -s "{params.subset}" -f '[%GT\t]\n' {input} | tr -d '/|' | sed -E s/\\t$// | sed s/10/01/ >> {output} 
+
+
+        """
+            
+rule difference_matrix:
+    conda: "envs/r-proxy.yaml"
+    input:
+        gmat="results/genotype-matrix.txt",
+        sites="results/degenotate/4Xsites.bed"
+    output:
+        diffmat="results/pairwise-differences.txt",
+        T1="results/divergence-time-mu1.txt",
+        T2="results/divergence-time-mu2.txt"
+    log: "logs/R-diff.log"
+    params:       
+        mu1="1.84e-10",
+        mu2="1.67e-10",
+        G=2920 # generations per year         
+    shell:
+        r"""
+        cat <<'EOF' > {rule}.$$.tmp.R
+        library(proxy)
+        
+        G <- {params.G}
+        N <- nrow(read.delim(file="{input.sites}")) ## how many total sites are there
+        cat(paste("Using",N,"as number of total 4D sites\n"))
+
+        comp2 <- function(x) {{
+         if (x[1] == x[2]) return(0)        
+         if (x[1] == 1 || x[2] == 1) return (0) # consider only homozygous mutations
+         return (1)
+        }}
+
+        
+        mydist <- function(x,y) sum(apply((cbind(x,y)),1, comp2))
+        gm <- read.delim(file="{input.gmat}", header=T, colClasses="numeric")
+        #gm <- gm[,-ncol(gm)]
+        #gm[gm==10] <- 1 #unlikely event of genotype 1|0 vs. 0|1
+        m <- as.matrix(proxy::dist(t(gm), method=mydist))
+        
+        write.table(m, file="{output.diffmat}", sep="\t", quote = F)
+        d.jc <- -3/4 * log(1 - ((4/3)*(m/N)))
+        T1 <- (d.jc/{params.mu1})/G
+        T2 <- (d.jc/{params.mu2})/G
+        write.table(T1, file="{output.T1}", sep="\t", quote = F)
+        write.table(T2, file="{output.T2}", sep="\t", quote = F)
+
+EOF
+        
+        Rscript {rule}.$$.tmp.R # > {log} 2>&1
+        rm {rule}.$$.tmp.R        
+        """

@@ -1,1 +1,7 @@
 ## Add configuratin options
+vcf: "input/selected-SNPINDEL_Ploidy2.vcf.gz"
+fasta: "input/GCF_000146045.2_R64_genomic.fna"
+gff: "input/GCF_000146045.2_R64_genomic.gff.gz"
+#subset: "sample_1B-1a,sample_1B-1b,sample_6-1a,sample_10-1c_S21,sample_Skrindo_2-SRR26832420,sample_Vabalninkas_1-SRR27587992"
+subset: "sample_10-1_S2,sample_10-1a_S19,sample_10-1b_S20,sample_10-1c_S21,sample_12-1_S4,sample_12-1a,sample_12-1b_S23,sample_13-1a_S24,sample_13-1b_S18,sample_13-1c_S19,sample_14-1b_S20,sample_14-1c_S21,sample_15-1a_S22,sample_15-1b_S23,sample_15-1c_S24,sample_16-1a_S25,sample_16-1b,sample_16-1c_S34,sample_17-1a,sample_17-1b,sample_17-1c,sample_18-1a,sample_18-1b,sample_18-1c,sample_19-1a,sample_1A-1_S1,sample_1B-1_S3,sample_1B-1a,sample_1B-1b,sample_1B-1c,sample_20-1c,sample_21-1a,sample_22-1a,sample_23-1b,sample_24-1a,sample_25-1a,sample_26-1c,sample_27-1a,sample_27-1b,sample_27-1c,sample_28-1a,sample_3-1_S5,sample_3-1c,sample_4-1_S6,sample_4-1a,sample_4-1b,sample_4-1c,sample_5-1_S7,sample_5-1a,sample_5-1b,sample_5-1c,sample_6-1_S8,sample_6-1a,sample_6-1b,sample_6-1c,sample_7-1_S9,sample_7-1b,sample_8-1_S10,sample_8-1a,sample_8-1b,sample_8-1c_S17,sample_9-1a_S45,sample_9-1b_S18,sample_9-1c_S46,sample_Dras_1-SRR26832411,sample_Halvorsgard_6-SRR26832426,sample_Marem_1-SRR26832412,sample_Pundurs_2-SRR27587995,sample_Rakstins_1-SRR26832410,sample_Rakstins_2-SRR27587994,sample_Skrindo_2-SRR26832420,sample_Skrindo_5-SRR26832418,sample_Vabalninkas_1-SRR27587992,sample_Vikintas-SRR27587991"
+renamechr: ""
