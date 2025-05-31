@@ -37,7 +37,9 @@ rule all:
     input: 
         m="results/pairwise-differences.txt",
         T1="results/divergence-time-mu1.txt",
-        T2="results/divergence-time-mu2.txt"
+        T2="results/divergence-time-mu2.txt",
+         s1="results/summary-mu1.txt",
+        s2="results/summary-mu2.txt"
     message: "Pairwise difference are found in {input.m}.\n Divergence time estimates are in {input.T1} and {input.T2}. "
 
 rule degenotate:
@@ -96,13 +98,16 @@ rule filter_vcf:
         sites="results/degenotate/4Xsites.bed",
     output: "results/filtered-4X.vcf.gz"
     threads: 40
-    message: "filtering SNP matrix"
+    message: "Filtering SNP matrix"
+    threads: 60
     shell:
         r"""
-       
-        bcftools view --threads {threads} -R {input.sites} --with-header --types snps --max-alleles 2  {input.vcf} |\
-        vcftools --gzvcf - --max-missing 1 --recode --stdout | bgzip -c > {output}
+        bcftools view --threads {threads} --regions-file {input.sites} \
+        -m2 -M2 -v snps --output-type z  --output-file {output} {input.vcf}
         bcftools index {output}
+        #bcftools view --threads {threads} -R {input.sites} --with-header --types snps --max-alleles 2  {input.vcf} |\
+        #vcftools --gzvcf - --max-missing 1 --recode --stdout | bgzip -c > {output}
+        #bcftools index {output}
         echo "---------------------------------------------------------"
         echo "Remaining markers after filtering for 4X-degenerate sites:"
         bcftools stats {output} | grep -e"^SN"
@@ -130,47 +135,129 @@ rule difference_matrix:
     conda: "envs/r-proxy.yaml"
     input:
         gmat="results/genotype-matrix.txt",
-        sites="results/degenotate/4Xsites.bed"
+        sites="results/degenotate/4Xsites.bed",
+        clust="config/samples.clust"
     output:
         diffmat="results/pairwise-differences.txt",
         T1="results/divergence-time-mu1.txt",
-        T2="results/divergence-time-mu2.txt"
+        T2="results/divergence-time-mu2.txt",
+        G1="results/divergence-generations-mu1.txt",
+        G2="results/divergence-generations-mu2.txt",
+        s1="results/groupwise-summary-mu1.txt",
+        s2="results/groupwise-summary-mu2.txt",
+        html="results/report.html"
     log: "logs/R-diff.log"
+    threads: 120    
     params:       
         mu1="1.84e-10",
         mu2="1.67e-10",
-        G=2920 # generations per year         
+        G=2920 # generations per year (Peter et al.)         
     shell:
         r"""
         cat <<'EOF' > {rule}.$$.tmp.R
         library(proxy)
+        library(dplyr)
+        library(parallelDist)
+        library(kableExtra)
         
         G <- {params.G}
         N <- nrow(read.delim(file="{input.sites}")) ## how many total sites are there
         cat(paste("Using",N,"as number of total 4D sites\n"))
 
-        comp2 <- function(x) {{
-         if (x[1] == x[2]) return(0)        
-         if (x[1] == 1 || x[2] == 1) return (0) # consider only homozygous mutations
-         return (1)
-        }}
-
         
-        mydist <- function(x,y) sum(apply((cbind(x,y)),1, comp2))
-        gm <- read.delim(file="{input.gmat}", header=T, colClasses="numeric")
-        #gm <- gm[,-ncol(gm)]
-        #gm[gm==10] <- 1 #unlikely event of genotype 1|0 vs. 0|1
-        m <- as.matrix(proxy::dist(t(gm), method=mydist))
+        ## Attempt to use multi-threads to speed up distance matrix calculation
+        # this is too slow for large matrices
+        # mydist <- function(x,y) sum(future_apply((cbind(x,y)),1, comp2))
+        # but effectively, that is the same as:
+         mydist <- function(x,y) sum(x+y==11, na.rm=TRUE)
         
+        gm <- read.delim(file="{input.gmat}", header=T, colClasses="numeric", na.strings=c("..","."))
+        cat("read genotypes, calculating distance matrix\n")
+        # gm <- t(gm==11) # convert into binary matrix (Hom_ALT | REF)
+        # gm[is.na(gm)] <- FALSE
+         m <- as.matrix(proxy::dist(t(gm), method=mydist))
+        # m <- as.matrix(parDist(gm, method = 'manhattan', threads={threads}))
+        # this doesn't treat NA properly
+        # m <- as.matrix(dist(gm, method = 'manhattan'))
+        # the number of different positions of two binary vector is equal to the manhattan distance
+        # not the 'binary' distance
+        cat ('got distance matrix of size: ')
+        cat(paste(object.size(m), "\n"))
         write.table(m, file="{output.diffmat}", sep="\t", quote = F)
         d.jc <- -3/4 * log(1 - ((4/3)*(m/N)))
+        ## Calculate generations
+        G1 <- (d.jc/{params.mu1})
+        G2 <- (d.jc/{params.mu2})
+        ## Calculate time
         T1 <- (d.jc/{params.mu1})/G
         T2 <- (d.jc/{params.mu2})/G
+        write.table(T1, file="{output.G1}", sep="\t", quote = F)
+        write.table(T2, file="{output.G2}", sep="\t", quote = F)
         write.table(T1, file="{output.T1}", sep="\t", quote = F)
         write.table(T2, file="{output.T2}", sep="\t", quote = F)
 
+        ## calculate group averages
+        clust <- read.delim(file="{input.clust}", header = FALSE) ## group file
+        clust[,1] <-make.names(clust[,1]) # fix names to match distance matrix
+        if (length(setdiff(colnames(T1),clust[,1])) > 0) {{
+            cat ("The following sample names were not found in your cluster file. Make sure, your cluster file contains all sample names ")
+            print( setdiff(colnames(T1),clust[,1]) )
+        }}    
+        stopifnot(length(setdiff(colnames(T1),clust[,1])) == 0) # not all colnames found in cluster file
+        clust <- merge(colnames(T1), clust, by=1, all=F, sort=F) ## match with the table headers
+        groups <- clust[,ncol(clust)]
+        xi <- rep(groups, nrow(T1))
+        yi <- as.vector(sapply(groups, rep, nrow(T1)))
+        bgroups <- apply(cbind(xi, yi), 1, function(x) paste0(sort(x), collapse = "-"))
+        inds <- - seq(1, ncol(T1)^2, ncol(T1)+1) # remove diag from estimates
+        gdist1 <- data.frame(dist=as.vector(matrix(as.matrix(T1), ncol=1, byrow = T)), 
+            generations=as.vector(matrix(as.matrix(G1), ncol=1, byrow = T)), 
+            group=bgroups)[inds,]
+        gdist2 <- data.frame(dist=as.vector(matrix(as.matrix(T2), ncol=1, byrow = T)), 
+            generations=as.vector(matrix(as.matrix(G2), ncol=1, byrow = T)), 
+            group=bgroups)[inds,]
+
+        get.q95 <- function(x) {{
+         q <- quantile(x = x, c(0.025,0.975))
+         paste0('[',round(q[1],3),',',round(q[2],3),']' )
+        }}
+
+        
+        res1 <- gdist1 %>% group_by(group) %>% 
+           summarise(mean_time=mean(dist), median_time=median(dist), sd_time=sd(dist),
+           min=min(dist), max=max(dist), "95%conf"=get.q95(dist), 
+           median_generations=format(median(generations), scientific = T), N=length(dist))
+        res2 <- gdist2 %>% group_by(group) %>% 
+           summarise(mean_time=mean(dist), median_time=median(dist), sd_time=sd(dist),
+           min=min(dist), max=max(dist), "95%conf"=get.q95(dist), 
+           median_generations=format(median(generations), scientific = T), N=length(dist))
+        write.table(res1, file="{output.s1}", sep="\t", quote = F)
+        write.table(res2, file="{output.s2}", sep="\t", quote = F)
+        
+        # generate some user-readable output and HTML report
+        kable(res1, caption=paste("mu =", "{params.mu1}"))
+        kable(res2, caption=paste("mu =", "{params.mu2}"))
+
+        cat("<html>\n  <head>\n   <title>Divergence time report</title> </head>\n  <body>\n", file='{output.html}', append=FALSE)
+        
+        cat(kable(
+           t(data.frame(
+           'Total number of 4XD sites'=N,
+           'Total number of samples'=ncol(gm),
+           'Total number of genotyping markers'=nrow(gm),
+           'Generations/year'=G,
+           'mu1'="{params.mu1}",
+           'mu2'="{params.mu2}"
+        )),
+        format = 'html', caption = "Analysis parameters:"), file='{output.html}', append=TRUE)
+        
+        cat(kable(res1, caption=paste("mu1 =", "{params.mu1}"), format='html'), file='{output.html}', append=TRUE)
+        cat(kable(res2, caption=paste("mu1 =", "{params.mu2}"), format='html'), file='{output.html}', append=TRUE)
+        cat("  </body>\n</html>", file='{output.html}', append=TRUE)
+        
+        
 EOF
         
-        Rscript {rule}.$$.tmp.R # > {log} 2>&1
+        Rscript {rule}.$$.tmp.R > {log} 2>&1
         rm {rule}.$$.tmp.R        
         """
