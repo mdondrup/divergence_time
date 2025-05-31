@@ -1,4 +1,4 @@
-# Snakemake workflow: `<name>`
+# Snakemake workflow: `Divergence Time Estimation`
 
 [![Snakemake](https://img.shields.io/badge/snakemake-≥6.3.0-brightgreen.svg)](https://snakemake.github.io)
 
